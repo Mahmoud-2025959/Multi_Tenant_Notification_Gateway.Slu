@@ -82,4 +82,3 @@ Demo requests: `Multi_Tenant_Notification_Gateway/demo.http`.
 - [x] Tests T01–T18 + security tests + unit + architecture
 - [x] 9 documents + ERD + diagrams + demo
 - [x] Test run: 84 passed, 0 failed (see docs/Testing_Report.md)
-- [ ] Attendance System integration (feature flag + outbox forwarder)
