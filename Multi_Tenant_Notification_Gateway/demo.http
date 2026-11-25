@@ -1,0 +1,141 @@
+### Multi-Tenant Notification Gateway — practical demonstration
+### Run the API in Development first (dotnet run). Adjust @host to the URL printed in the console.
+
+@host = http://localhost:5000
+
+### 1) Token: Attendance backend for tenant-001 (Service + TenantAdmin)
+# @name t1
+POST {{host}}/api/dev/token
+Content-Type: application/json
+
+{ "userId": "attendance-service", "tenantId": "11111111-1111-1111-1111-111111111111", "roles": ["Service", "TenantAdmin"], "lifetimeMinutes": 120 }
+
+###
+@t1 = {{t1.response.body.accessToken}}
+
+### 2) Token: tenant-002 admin
+# @name t2
+POST {{host}}/api/dev/token
+Content-Type: application/json
+
+{ "userId": "branch-admin", "tenantId": "22222222-2222-2222-2222-222222222222", "roles": ["Service", "TenantAdmin"], "lifetimeMinutes": 120 }
+
+###
+@t2 = {{t2.response.body.accessToken}}
+
+### 3) Token: end user manager-1 of tenant-001
+# @name u1
+POST {{host}}/api/dev/token
+Content-Type: application/json
+
+{ "userId": "manager-1", "tenantId": "11111111-1111-1111-1111-111111111111", "roles": ["TenantUser"], "lifetimeMinutes": 120 }
+
+###
+@u1 = {{u1.response.body.accessToken}}
+
+### 4) Send — exact spec example shape (single "recipient"), with an idempotency key
+# @name send
+POST {{host}}/api/notifications/send
+Authorization: Bearer {{t1}}
+Content-Type: application/json
+Idempotency-Key: demo-checkin-001
+
+{
+  "tenantId": "tenant-001",
+  "recipient": { "userId": "manager-1", "phone": "+201000000000", "email": "manager@agency.gov.eg" },
+  "notificationType": "attendance.late",
+  "channels": ["InApp", "SignalR", "Email", "Sms"],
+  "templateCode": "ATTENDANCE_LATE",
+  "data": { "EmployeeName": "Ahmed", "CheckInTime": "08:30", "Date": "2026-11-22" },
+  "priority": "High"
+}
+
+###
+@notificationId = {{send.response.body.notificationId}}
+
+### 5) Same request again → same notificationId, header Idempotent-Replayed: true
+POST {{host}}/api/notifications/send
+Authorization: Bearer {{t1}}
+Content-Type: application/json
+Idempotency-Key: demo-checkin-001
+
+{
+  "tenantId": "tenant-001",
+  "recipient": { "userId": "manager-1", "phone": "+201000000000", "email": "manager@agency.gov.eg" },
+  "notificationType": "attendance.late",
+  "channels": ["InApp", "SignalR", "Email", "Sms"],
+  "templateCode": "ATTENDANCE_LATE",
+  "data": { "EmployeeName": "Ahmed", "CheckInTime": "08:30", "Date": "2026-11-22" },
+  "priority": "High"
+}
+
+### 6) Track (wait 2–3 s): InApp Delivered, SignalR Sent, SMS = primary TransientFailure → backup Accepted
+GET {{host}}/api/notifications/{{notificationId}}
+Authorization: Bearer {{t1}}
+
+### 7) The user's inbox (Arabic: tenant-001 default language)
+GET {{host}}/api/me/inbox
+Authorization: Bearer {{u1}}
+
+### 8) Isolation: tenant-002 cannot see tenant-001's notification → 404
+GET {{host}}/api/notifications/{{notificationId}}
+Authorization: Bearer {{t2}}
+
+### 9) Isolation: tenant-002 cannot open tenant-001's settings → 403
+GET {{host}}/api/tenants/tenant-001/providers
+Authorization: Bearer {{t2}}
+
+### 10) Isolation: body tenantId of another tenant → 403
+POST {{host}}/api/notifications/send
+Authorization: Bearer {{t2}}
+Content-Type: application/json
+
+{ "tenantId": "tenant-001", "recipient": { "userId": "x" }, "notificationType": "attendance.late", "templateCode": "ATTENDANCE_LATE", "priority": "Normal", "data": { "EmployeeName": "X", "CheckInTime": "08:00" }, "channels": ["InApp"] }
+
+### 11) Settings overview of tenant-001 (channels, chains, quotas)
+GET {{host}}/api/tenants/tenant-001/notification-settings
+Authorization: Bearer {{t1}}
+
+### 12) Arabic template preview
+POST {{host}}/api/tenants/tenant-001/templates/preview
+Authorization: Bearer {{t1}}
+Content-Type: application/json
+
+{ "code": "ATTENDANCE_LATE", "channel": "Email", "language": "Ar", "data": { "EmployeeName": "منى", "CheckInTime": "08:45", "Date": "2026-11-22" } }
+
+### 13) Provider switch: add a new SMS provider and make it primary (no code change)
+# @name newSms
+POST {{host}}/api/tenants/tenant-001/providers
+Authorization: Bearer {{t1}}
+Content-Type: application/json
+
+{ "providerKey": "fake-sms", "name": "New SMS vendor", "settings": { "mode": "success" }, "secrets": { "apiKey": "first-key" }, "senderIdentity": "AGENCY" }
+
+###
+@newSmsId = {{newSms.response.body.id}}
+
+### 14) Put it first in the chain
+PUT {{host}}/api/tenants/tenant-001/channels/Sms/providers
+Authorization: Bearer {{t1}}
+Content-Type: application/json
+
+{ "providerConfigurationIds": ["{{newSmsId}}"] }
+
+### 15) Rotate its secret → secretVersion 2, value never returned
+PUT {{host}}/api/tenants/tenant-001/providers/{{newSmsId}}/secrets
+Authorization: Bearer {{t1}}
+Content-Type: application/json
+
+{ "secrets": { "apiKey": "rotated-key" } }
+
+### 16) Reports
+GET {{host}}/api/tenants/tenant-001/reports/summary
+Authorization: Bearer {{t1}}
+
+###
+GET {{host}}/api/tenants/tenant-001/reports/providers
+Authorization: Bearer {{t1}}
+
+### 17) Dead letters
+GET {{host}}/api/tenants/tenant-001/dead-letters
+Authorization: Bearer {{t1}}

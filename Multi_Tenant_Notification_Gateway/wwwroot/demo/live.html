@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>Notification Gateway — Live view</title>
+<script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@8.0.7/dist/browser/signalr.min.js"></script>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1d2433; --muted:#6b7385; --ok:#1f8a4c; --bad:#c0392b; --accent:#2457c5; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI",Tahoma,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:#1d2433; color:#fff; padding:14px 22px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  .pill { padding:3px 10px; border-radius:999px; font-size:12px; background:#3a4256; }
+  .pill.on { background:var(--ok); } .pill.off { background:var(--bad); }
+  main { max-width:880px; margin:22px auto; padding:0 16px; }
+  .bar { display:flex; gap:10px; flex-wrap:wrap; align-items:end; background:var(--card); padding:14px; border-radius:10px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; }
+  input, select { padding:7px 9px; border:1px solid #d4d8e0; border-radius:6px; font:inherit; min-width:150px; direction:ltr; }
+  button { padding:8px 16px; border:0; border-radius:6px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.secondary { background:#e7eaf0; color:var(--ink); }
+  .bell { margin-inline-start:auto; font-size:14px; }
+  .bell b { background:var(--bad); color:#fff; border-radius:999px; padding:1px 8px; margin-inline-start:4px; }
+  #feed { margin-top:18px; display:flex; flex-direction:column; gap:10px; }
+  .card { background:var(--card); border-radius:10px; padding:12px 16px; box-shadow:0 1px 3px rgba(0,0,0,.06); border-inline-start:4px solid var(--accent); animation:in .35s ease; }
+  .card.Critical, .card.High { border-inline-start-color:var(--bad); }
+  .card .t { font-weight:600; } .card .b { margin:4px 0; } .card .m { font-size:12px; color:var(--muted); direction:ltr; text-align:right; }
+  .empty { color:var(--muted); text-align:center; padding:30px; }
+  @keyframes in { from { opacity:0; transform:translateY(-6px);} to { opacity:1; transform:none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Notification Gateway · Live view (SignalR)</h1>
+  <span id="state" class="pill off">غير متصل</span>
+  <span class="bell">🔔 غير المقروء <b id="unread">0</b></span>
+</header>
+<main>
+  <div class="bar">
+    <label>Tenant
+      <select id="tenant">
+        <option value="11111111-1111-1111-1111-111111111111">tenant-001 (Ar)</option>
+        <option value="22222222-2222-2222-2222-222222222222">tenant-002 (En)</option>
+      </select>
+    </label>
+    <label>User ID <input id="user" value="manager-1"></label>
+    <button id="connect">اتصال</button>
+    <button id="markAll" class="secondary">تعليم الكل كمقروء</button>
+  </div>
+  <div id="feed"><div class="empty">اتصل، وبعدها ابعت إشعار لنفس المستخدم (من الـ demo script أو Swagger)، وهيظهر هنا فوراً.</div></div>
+</main>
+<script>
+  // Development-only page: gets a TenantUser token from /api/dev/token, joins the hub, and shows pushes as they arrive.
+  let conn = null, token = null;
+  const $ = id => document.getElementById(id);
+  const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+  async function api(path, opts = {}) {
+    const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}), ...(opts.headers || {}) } });
+    if (!r.ok) throw new Error(path + " → " + r.status);
+    return r.status === 204 ? null : r.json();
+  }
+  async function refreshUnread() {
+    try { $("unread").textContent = (await api("/api/me/inbox/unread-count")).count; } catch { }
+  }
+  function setState(on, text) { $("state").className = "pill " + (on ? "on" : "off"); $("state").textContent = text; }
+
+  function show(m) {
+    const feed = $("feed");
+    if (feed.querySelector(".empty")) feed.innerHTML = "";
+    const lang = /[؀-ۿ]/.test(m.body) ? "rtl" : "ltr";
+    feed.insertAdjacentHTML("afterbegin",
+      `<div class="card ${esc(m.priority)}" dir="${lang}">
+         <div class="t">${esc(m.title || m.notificationType)}</div>
+         <div class="b">${esc(m.body)}</div>
+         <div class="m">${esc(m.notificationType)} · ${esc(m.priority)} · ${new Date(m.sentAt).toLocaleTimeString()} · notification ${esc(m.notificationId)}</div>
+       </div>`);
+  }
+
+  $("connect").onclick = async () => {
+    try {
+      if (conn) await conn.stop();
+      token = (await api("/api/dev/token", { method: "POST",
+        body: JSON.stringify({ userId: $("user").value.trim(), tenantId: $("tenant").value, roles: ["TenantUser"], lifetimeMinutes: 240 }) })).accessToken;
+      conn = new signalR.HubConnectionBuilder()
+        .withUrl("/hubs/notifications", { accessTokenFactory: () => token })
+        .withAutomaticReconnect()
+        .build();
+      conn.on("notification", m => { show(m); refreshUnread(); });
+      conn.onreconnecting(() => setState(false, "بيعيد الاتصال…"));
+      conn.onreconnected(() => setState(true, "متصل: " + $("user").value));
+      conn.onclose(() => setState(false, "غير متصل"));
+      await conn.start();
+      setState(true, "متصل: " + $("user").value);
+      $("feed").innerHTML = '<div class="empty">متصل. في انتظار الإشعارات…</div>';
+      refreshUnread();
+    } catch (e) { setState(false, "فشل الاتصال"); alert(e.message); }
+  };
+  $("markAll").onclick = async () => { if (token) { await api("/api/me/inbox/read-all", { method: "POST" }); refreshUnread(); } };
+</script>
+</body>
+</html>

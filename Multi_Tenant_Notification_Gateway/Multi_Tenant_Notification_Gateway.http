@@ -1,0 +1,6 @@
+@Multi_Tenant_Notification_Gateway_HostAddress = http://localhost:5025
+
+GET {{Multi_Tenant_Notification_Gateway_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
